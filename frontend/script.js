@@ -25,12 +25,10 @@ async function loadPlaylist() {
         if (data.playlist && data.playlist.length > 0) {
             playlist = data.playlist;
         } else {
-            // Fallback: use preloaded demo songs
-            playlist = [
-                { file_id: null, filename: 'Song 1.mp3', url: 'demo/songs/song1.mp3' },
-                { file_id: null, filename: 'Song 2.mp3', url: 'demo/songs/song2.mp3' },
-                { file_id: null, filename: 'Song 3.mp3', url: 'demo/songs/song3.mp3' },
-            ];
+            // Try to default to all songs from backend as a queue
+            const songsRes = await fetch("http://127.0.0.1:8000/songs");
+            const songsData = await songsRes.json();
+            playlist = (songsData.songs || []).map(s => ({ file_id: s._id, filename: s.filename }));
         }
 
         displayQueue();
@@ -51,6 +49,7 @@ async function loadPlaylist() {
 // 2. Display Playlist in Queue
 // =========================
 function displayQueue() {
+    if (!queueContent) return; // Some pages may not include the queue modal
     queueContent.innerHTML = '';
     playlist.forEach((song, index) => {
         const li = document.createElement('div');

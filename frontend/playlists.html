@@ -51,11 +51,16 @@
             </nav>
             
             <div class="sidebar-playlists">
-                <div class="playlist-header">
+                <div class="playlist-header" style="display:flex;gap:0.5rem;align-items:center;">
                     <button class="create-playlist-btn" id="createPlaylistBtn">
                         <i class="fas fa-plus"></i>
                         <span>Create Playlist</span>
                     </button>
+                    <button class="create-playlist-btn" id="uploadSongBtn" title="Upload MP3">
+                        <i class="fas fa-upload"></i>
+                        <span>Upload Song</span>
+                    </button>
+                    <input type="file" id="uploadSongInput" accept="audio/mpeg" style="display:none;" />
                 </div>
                 <div class="playlist-list" id="playlistList">
                     <!-- Playlists will be dynamically added here -->
@@ -271,7 +276,31 @@
                 window.app.start();
             }
             
-            // Load playlists
+            // Wire create playlist modal actions
+            wireCreatePlaylistModal();
+
+            // Wire upload song
+            const uploadBtn = document.getElementById('uploadSongBtn');
+            const uploadInput = document.getElementById('uploadSongInput');
+            if (uploadBtn && uploadInput) {
+                uploadBtn.addEventListener('click', () => uploadInput.click());
+                uploadInput.addEventListener('change', async (e) => {
+                    const file = e.target.files && e.target.files[0];
+                    if (!file) return;
+                    try {
+                        await uploadSong(file);
+                        await loadPlaylists();
+                        alert('Upload complete');
+                    } catch (err) {
+                        console.error('Upload failed', err);
+                        alert('Upload failed');
+                    } finally {
+                        uploadInput.value = '';
+                    }
+                });
+            }
+
+            // Load playlists from backend + system
             loadPlaylists();
             
             // Setup playlist filters
@@ -284,17 +313,25 @@
             });
         });
         
-        function loadPlaylists() {
-            const playlists = JSON.parse(localStorage.getItem('vibeBeatPlaylists') || '[]');
+        async function loadPlaylists() {
             const likedSongs = JSON.parse(localStorage.getItem('vibeBeatLikedSongs') || '[]');
             const musicLibrary = getMusicLibrary();
-            
-            // Create system playlists
+
+            // Create system playlists (local, informational)
             const systemPlaylists = createSystemPlaylists(likedSongs, musicLibrary);
-            
-            // Display system and custom playlists separately
+
+            // Fetch custom playlists from backend
+            let customPlaylists = [];
+            try {
+                const res = await fetch('http://127.0.0.1:8000/playlists');
+                const data = await res.json();
+                customPlaylists = data.playlists || [];
+            } catch (e) {
+                console.error('Failed to fetch playlists from backend', e);
+            }
+
             displaySystemPlaylists(systemPlaylists);
-            displayCustomPlaylists(playlists);
+            displayCustomPlaylists(customPlaylists);
         }
         
         function createSystemPlaylists(likedSongs, musicLibrary) {
@@ -455,6 +492,7 @@
         function displaySystemPlaylists(playlists) {
             const grid = document.getElementById('systemPlaylistsGrid');
             grid.innerHTML = playlists.map(playlist => createPlaylistCard(playlist)).join('');
+            wirePlaylistPlayButtons();
         }
         
         function displayCustomPlaylists(playlists) {
@@ -475,6 +513,7 @@
             }
             
             grid.innerHTML = playlists.map(playlist => createPlaylistCard(playlist)).join('');
+            wirePlaylistPlayButtons();
         }
         
         function createPlaylistCard(playlist) {
@@ -494,7 +533,7 @@
                             <img src="${playlist.image || 'https://i.scdn.co/image/ab67616d0000b2736dafe7cc3b0811b46c7f6617'}" alt="${playlist.name}">
                         `}
                         <div class="playlist-overlay">
-                            <button class="playlist-play-btn" data-playlist-id="${playlist.id}">
+                            <button class="playlist-play-btn" data-playlist-id="${playlist._id || playlist.id}">
                                 <i class="fas fa-play"></i>
                             </button>
                         </div>
@@ -512,14 +551,14 @@
                         </div>
                     </div>
                     <div class="playlist-actions">
-                        <button class="playlist-action-btn" onclick="showPlaylistDetails('${playlist.id}')" title="View Details">
+                        <button class="playlist-action-btn" onclick="showPlaylistDetails('${playlist._id || playlist.id}')" title="View Details">
                             <i class="fas fa-info-circle"></i>
                         </button>
                         ${!isSystem ? `
-                            <button class="playlist-action-btn" onclick="editPlaylist('${playlist.id}')" title="Edit">
+                            <button class="playlist-action-btn" onclick="editPlaylist('${playlist._id || playlist.id}')" title="Edit">
                                 <i class="fas fa-edit"></i>
                             </button>
-                            <button class="playlist-action-btn" onclick="deletePlaylist('${playlist.id}')" title="Delete">
+                            <button class="playlist-action-btn" onclick="deletePlaylist('${playlist._id || playlist.id}')" title="Delete">
                                 <i class="fas fa-trash"></i>
                             </button>
                         ` : `
@@ -530,6 +569,26 @@
                     </div>
                 </div>
             `;
+        }
+
+        function wirePlaylistPlayButtons() {
+            document.querySelectorAll('.playlist-play-btn').forEach(btn => {
+                btn.addEventListener('click', async (e) => {
+                    const pid = e.currentTarget.dataset.playlistId;
+                    try {
+                        await fetch(`http://127.0.0.1:8000/queue/from_playlist/${pid}`, { method: 'POST' });
+                        // Refresh queue and start playback using global functions from script.js
+                        if (typeof loadPlaylist === 'function') {
+                            await loadPlaylist();
+                            if (typeof playSong === 'function') {
+                                playSong(0);
+                            }
+                        }
+                    } catch (err) {
+                        console.error('Failed to play playlist', err);
+                    }
+                });
+            });
         }
         
         function getPlaylistIcon(type) {
@@ -607,9 +666,77 @@
             }
         }
         
-        function showPlaylistDetails(playlistId) {
-            // Implementation for showing playlist details
-            console.log('Show details for playlist:', playlistId);
+        async function showPlaylistDetails(playlistId) {
+            const modal = document.getElementById('playlistDetailsModal');
+            const titleEl = document.getElementById('playlistDetailsTitle');
+            const content = document.getElementById('playlistDetailsContent');
+            try {
+                const [plRes, songsRes] = await Promise.all([
+                    fetch(`http://127.0.0.1:8000/playlists/${playlistId}`),
+                    fetch('http://127.0.0.1:8000/songs'),
+                ]);
+                const playlist = await plRes.json();
+                const songsData = await songsRes.json();
+                const songs = songsData.songs || [];
+
+                titleEl.textContent = playlist.name;
+
+                const currentSongs = playlist.songs || [];
+                const currentIds = new Set(currentSongs.map(s => String(s.file_id)));
+
+                const currentListHtml = currentSongs.length ? currentSongs.map(s => `
+                    <div class="queue-item">
+                        <div class="queue-item-info">
+                            <h5>${s.filename}</h5>
+                        </div>
+                        <button class="playlist-action-btn" data-action="remove" data-file-id="${s.file_id}" data-playlist-id="${playlist._id}"><i class="fas fa-minus"></i></button>
+                    </div>
+                `).join('') : '<p>No songs in this playlist yet.</p>';
+
+                const addableSongs = songs.filter(s => !currentIds.has(String(s._id)));
+                const addListHtml = addableSongs.length ? addableSongs.map(s => `
+                    <div class="queue-item">
+                        <div class="queue-item-info">
+                            <h5>${s.filename}</h5>
+                        </div>
+                        <button class="playlist-action-btn" data-action="add" data-file-id="${s._id}" data-playlist-id="${playlist._id}"><i class="fas fa-plus"></i></button>
+                    </div>
+                `).join('') : '<p>All available songs are already in this playlist.</p>';
+
+                content.innerHTML = `
+                    <h4>Current Songs</h4>
+                    <div>${currentListHtml}</div>
+                    <hr style="opacity:.2;margin:1rem 0;" />
+                    <h4>Add Songs</h4>
+                    <div>${addListHtml}</div>
+                `;
+
+                // Delegate add/remove actions
+                content.addEventListener('click', async (e) => {
+                    const btn = e.target.closest('button[data-action]');
+                    if (!btn) return;
+                    const action = btn.dataset.action;
+                    const fid = btn.dataset.fileId;
+                    const pid = btn.dataset.playlistId;
+                    try {
+                        if (action === 'add') {
+                            await fetch(`http://127.0.0.1:8000/playlists/${pid}/songs/${fid}`, { method: 'POST' });
+                        } else if (action === 'remove') {
+                            await fetch(`http://127.0.0.1:8000/playlists/${pid}/songs/${fid}`, { method: 'DELETE' });
+                        }
+                        showPlaylistDetails(pid); // refresh details
+                        loadPlaylists(); // refresh list
+                    } catch (err) {
+                        console.error('Failed to modify playlist songs', err);
+                    }
+                }, { once: true });
+
+                modal.classList.add('active');
+                document.getElementById('closePlaylistDetails').onclick = () => modal.classList.remove('active');
+                document.getElementById('closePlaylistDetailsModal').onclick = () => modal.classList.remove('active');
+            } catch (err) {
+                console.error('Failed to load playlist details', err);
+            }
         }
         
         function editPlaylist(playlistId) {
@@ -617,13 +744,47 @@
             console.log('Edit playlist:', playlistId);
         }
         
-        function deletePlaylist(playlistId) {
-            if (confirm('Are you sure you want to delete this playlist?')) {
-                const playlists = JSON.parse(localStorage.getItem('vibeBeatPlaylists') || '[]');
-                const updatedPlaylists = playlists.filter(p => p.id !== playlistId);
-                localStorage.setItem('vibeBeatPlaylists', JSON.stringify(updatedPlaylists));
+        async function deletePlaylist(playlistId) {
+            if (!confirm('Are you sure you want to delete this playlist?')) return;
+            try {
+                await fetch(`http://127.0.0.1:8000/playlists/${playlistId}`, { method: 'DELETE' });
                 loadPlaylists();
+            } catch (e) {
+                console.error('Failed to delete playlist', e);
             }
+        }
+
+        function wireCreatePlaylistModal() {
+            const openBtns = [
+                document.getElementById('createPlaylistMainBtn'),
+                document.getElementById('createPlaylistBtn'),
+            ].filter(Boolean);
+            const modal = document.getElementById('createPlaylistModal');
+            const closeBtn = document.getElementById('closePlaylistModal');
+            const cancelBtn = document.getElementById('cancelPlaylist');
+            const createBtn = document.getElementById('createPlaylist');
+
+            openBtns.forEach(b => b.addEventListener('click', () => modal.classList.add('active')));
+            if (closeBtn) closeBtn.addEventListener('click', () => modal.classList.remove('active'));
+            if (cancelBtn) cancelBtn.addEventListener('click', () => modal.classList.remove('active'));
+            if (createBtn) createBtn.addEventListener('click', async () => {
+                const name = document.getElementById('playlistName').value.trim();
+                const description = document.getElementById('playlistDescription').value.trim();
+                if (!name) { alert('Please enter a playlist name'); return; }
+                try {
+                    await fetch('http://127.0.0.1:8000/playlists', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ name, description }),
+                    });
+                    modal.classList.remove('active');
+                    document.getElementById('playlistName').value = '';
+                    document.getElementById('playlistDescription').value = '';
+                    loadPlaylists();
+                } catch (e) {
+                    console.error('Failed to create playlist', e);
+                }
+            });
         }
     </script>
     
