@@ -156,4 +156,19 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Load playlist from backend
     loadPlaylist();
+
+    // Upload button wiring
+    const uploadBtn = document.getElementById('uploadBtn');
+    const uploadInput = document.getElementById('uploadInput');
+    if (uploadBtn && uploadInput) {
+        uploadBtn.addEventListener('click', () => uploadInput.click());
+        uploadInput.addEventListener('change', (e) => {
+            const file = e.target.files && e.target.files[0];
+            if (file) {
+                uploadSong(file);
+            }
+            // reset input so selecting the same file again still fires change
+            uploadInput.value = '';
+        });
+    }
 });

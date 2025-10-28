@@ -1,182 +1,90 @@
-# main.py
-from fastapi import FastAPI, HTTPException, UploadFile, File
-from fastapi.responses import StreamingResponse
-from datetime import datetime, timezone
-from fastapi.middleware.cors import CORSMiddleware
-from pymongo import MongoClient
-from bson import ObjectId
-import gridfs
-from playlist import PlaylistManager
-from db import db, fs
+import os
+from flask import Flask, request, jsonify, send_from_directory
+from flask_cors import CORS
+from playlist_manager import PlaylistManager
 
-app = FastAPI()
+# Flask setup
+app = Flask(__name__)
+CORS(app)
 
-# Enable CORS
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"], 
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# Folder to save uploaded songs
+UPLOAD_FOLDER = "uploads"
+os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
-# Playlist Manager instance
+# Playlist manager (linked list)
 playlist = PlaylistManager()
 
 
-# ---- Upload Song to Database (GridFS) ----
-@app.post("/upload_song/")
-async def upload_song(file: UploadFile = File(...)):
-    try:
-        contents = await file.read()
-        gridfs_id = fs.put(contents, filename=file.filename)
-        # store reference in songs collection; use GridFS id as _id for simplicity
-        db["songs"].update_one(
-            {"_id": gridfs_id},
-            {"$set": {"filename": file.filename}},
-            upsert=True,
-        )
-        return {"message": "Song uploaded", "file_id": str(gridfs_id), "filename": file.filename}
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Upload failed: {exc}")
+# ---- Upload Song ----
+@app.route("/upload_song/", methods=["POST"])
+def upload_song():
+    if "file" not in request.files:
+        return jsonify({"error": "No file provided"}), 400
+
+    file = request.files["file"]
+    if file.filename == "":
+        return jsonify({"error": "No file selected"}), 400
+
+    file_path = os.path.join(UPLOAD_FOLDER, file.filename)
+    file.save(file_path)
+
+    return jsonify({
+        "message": "Song uploaded successfully",
+        "filename": file.filename,
+        "path": file_path
+    })
 
 
-# ---- Fetch All Songs from Database ----
-@app.get("/songs")
+# ---- Fetch All Songs ----
+@app.route("/songs", methods=["GET"])
 def get_all_songs():
-    songs = list(db["songs"].find({}, {"_id": 1, "filename": 1}))
-    # Convert ObjectId to string
-    for song in songs:
-        song["_id"] = str(song["_id"])
-    return {"songs": songs}
+    files = os.listdir(UPLOAD_FOLDER)
+    songs = [{"filename": f, "path": f"/play/{f}"} for f in files]
+    return jsonify({"songs": songs})
 
 
-# ---- Play MP3 by file_id ----
-@app.get("/play/{file_id}")
-def play_song(file_id: str):
+# ---- Play a Song ----
+@app.route("/play/<filename>", methods=["GET"])
+def play_song(filename):
     try:
-        file = fs.get(ObjectId(file_id))
-        return StreamingResponse(file, media_type="audio/mpeg")
-    except Exception:
-        raise HTTPException(status_code=404, detail="Song not found")
+        return send_from_directory(UPLOAD_FOLDER, filename, mimetype="audio/mpeg")
+    except FileNotFoundError:
+        return jsonify({"error": "Song not found"}), 404
 
 
-# ---- Get Current Queue (Linked List) ----
-@app.get("/playlist")
+# ---- Playlist Operations ----
+@app.route("/playlist", methods=["GET"])
 def get_playlist():
-    return {"playlist": playlist.display_playlist()}
+    return jsonify({"playlist": playlist.display_playlist()})
 
 
-# ---- Add Song to Current Queue ----
-@app.post("/add_song/{file_id}")
-def add_song(file_id: str):
-    song = db["songs"].find_one({"_id": ObjectId(file_id)})
-    if not song:
-        raise HTTPException(status_code=404, detail="Song not found")
+@app.route("/add_song/<filename>", methods=["POST"])
+def add_song(filename):
+    song_path = os.path.join(UPLOAD_FOLDER, filename)
+    if not os.path.exists(song_path):
+        return jsonify({"error": "Song not found"}), 404
 
     playlist.add_to_playlist({
-        "file_id": str(file_id),
-        "filename": song["filename"]
+        "filename": filename,
+        "path": f"/play/{filename}"
     })
-    return {"message": f"{song['filename']} added to queue"}
+    return jsonify({"message": f"{filename} added to queue"})
 
 
-# ---- Remove Song from Current Queue by filename ----
-@app.delete("/remove_song/{filename}")
-def remove_song(filename: str):
+@app.route("/remove_song/<filename>", methods=["DELETE"])
+def remove_song(filename):
     success = playlist.remove_by_filename(filename)
     if success:
-        return {"message": f"{filename} removed from playlist"}
+        return jsonify({"message": f"{filename} removed from playlist"})
     else:
-        raise HTTPException(status_code=404, detail="Song not found in playlist")
+        return jsonify({"error": "Song not found in playlist"}), 404
 
 
-# ---- Remove Song from Current Queue by file_id ----
-@app.delete("/remove_song_by_id/{file_id}")
-def remove_song_by_id(file_id: str):
-    success = playlist.remove_by_file_id(file_id)
-    if success:
-        return {"message": f"{file_id} removed from playlist"}
-    else:
-        raise HTTPException(status_code=404, detail="Song not found in playlist")
-
-
-# ---- Playlists CRUD (MongoDB persistence) ----
-@app.get("/playlists")
-def list_playlists():
-    playlists = list(db["playlists"].find({}))
-    for p in playlists:
-        p["_id"] = str(p["_id"])
-        # normalize song ids to str
-        if "songs" in p:
-            for s in p["songs"]:
-                s["file_id"] = str(s.get("file_id"))
-    return {"playlists": playlists}
-
-
-@app.post("/playlists")
-def create_playlist(payload: dict):
-    name = payload.get("name")
-    description = payload.get("description", "")
-    if not name:
-        raise HTTPException(status_code=400, detail="name is required")
-    doc = {"name": name, "description": description, "songs": [], "createdAt": datetime.now(timezone.utc).isoformat()}
-    result = db["playlists"].insert_one(doc)
-    return {"_id": str(result.inserted_id), "name": name}
-
-
-@app.get("/playlists/{playlist_id}")
-def get_playlist_by_id(playlist_id: str):
-    pl = db["playlists"].find_one({"_id": ObjectId(playlist_id)})
-    if not pl:
-        raise HTTPException(status_code=404, detail="Playlist not found")
-    pl["_id"] = str(pl["_id"])
-    for s in pl.get("songs", []):
-        s["file_id"] = str(s.get("file_id"))
-    return pl
-
-
-@app.delete("/playlists/{playlist_id}")
-def delete_playlist(playlist_id: str):
-    res = db["playlists"].delete_one({"_id": ObjectId(playlist_id)})
-    if res.deleted_count == 0:
-        raise HTTPException(status_code=404, detail="Playlist not found")
-    return {"message": "Playlist deleted"}
-
-
-@app.post("/playlists/{playlist_id}/songs/{file_id}")
-def add_song_to_playlist(playlist_id: str, file_id: str):
-    song = db["songs"].find_one({"_id": ObjectId(file_id)})
-    if not song:
-        raise HTTPException(status_code=404, detail="Song not found")
-    update_res = db["playlists"].update_one(
-        {"_id": ObjectId(playlist_id)},
-        {"$addToSet": {"songs": {"file_id": ObjectId(file_id), "filename": song["filename"]}}},
-    )
-    if update_res.matched_count == 0:
-        raise HTTPException(status_code=404, detail="Playlist not found")
-    return {"message": "Song added to playlist"}
-
-
-@app.delete("/playlists/{playlist_id}/songs/{file_id}")
-def remove_song_from_playlist(playlist_id: str, file_id: str):
-    update_res = db["playlists"].update_one(
-        {"_id": ObjectId(playlist_id)},
-        {"$pull": {"songs": {"file_id": ObjectId(file_id)}}},
-    )
-    if update_res.matched_count == 0:
-        raise HTTPException(status_code=404, detail="Playlist not found")
-    return {"message": "Song removed from playlist"}
-
-
-# ---- Load Queue from a Playlist ----
-@app.post("/queue/from_playlist/{playlist_id}")
-def load_queue_from_playlist(playlist_id: str):
-    pl = db["playlists"].find_one({"_id": ObjectId(playlist_id)})
-    if not pl:
-        raise HTTPException(status_code=404, detail="Playlist not found")
-    # reset linked list and fill it with playlist songs
+@app.route("/playlist/clear", methods=["DELETE"])
+def clear_playlist():
     playlist.head = None
-    for s in pl.get("songs", []):
-        playlist.add_to_playlist({"file_id": str(s["file_id"]), "filename": s["filename"]})
-    return {"message": "Queue loaded", "count": len(pl.get("songs", []))}
+    return jsonify({"message": "Playlist cleared"})
+
+
+if __name__ == "__main__":
+    app.run(debug=True, port=5000)
