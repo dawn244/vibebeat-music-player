@@ -14,6 +14,11 @@ os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 # Playlist manager (linked list)
 playlist = PlaylistManager()
 
+from flask import send_from_directory
+
+@app.route('/favicon.png')
+def favicon():
+    return send_from_directory('static', 'favicon.png', mimetype='image/png')
 
 # ---- Upload Song ----
 @app.route("/upload_song/", methods=["POST"])
