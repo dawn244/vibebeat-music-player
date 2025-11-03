@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>VibeBeat — Playlist Manager</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div id="app">
+    <header id="topnav">
+      <div class="logo">🎵 <strong>VibeBeat</strong></div>
+      <div class="actions">
+        <input id="uploadInput" type="file" accept="audio/*" style="display:none" />
+        <button id="uploadBtn" class="primary">Upload Song</button>
+        <button id="createPlaylist" class="primary">New Playlist</button>
+      </div>
+    </header>
+
+    <main>
+      <aside id="sidebar">
+        <h3>Playlists</h3>
+        <ul id="sidebarPlaylists" class="playlist-list"></ul>
+      </aside>
+
+      <section id="content">
+        <div id="librarySection">
+          <h2>Library</h2>
+          <div id="libraryGrid" class="grid"></div>
+        </div>
+
+        <div id="playlistsSection">
+          <h2>Your Playlists</h2>
+          <div id="playlistsGrid" class="grid"></div>
+        </div>
+
+        <div id="playlistDetail" class="card" style="display:none;">
+          <h2 id="playlistTitle">Playlist Title</h2>
+          <p id="playlistDesc"></p>
+          <p id="playlistInfo"></p>
+          <div class="detail-actions">
+            <button id="playAllBtn" class="primary">Play All</button>
+            <button id="addSongsBtn">Add Songs</button>
+            <button id="editPlaylistBtn">Edit</button>
+            <button id="deletePlaylistBtn">Delete</button>
+          </div>
+          <div id="playlistSongs" style="margin-top:12px;"></div>
+        </div>
+      </section>
+    </main>
+
+    <footer id="player">
+      <div class="track">
+        <div id="trackTitle">No song</div>
+        <div id="trackArtist"></div>
+      </div>
+      <audio id="audio" controls></audio>
+    </footer>
+  </div>
+
+  <!-- Modal -->
+  <div id="modal" class="modal" style="display:none;">
+    <div class="modal-inner" id="modalInner"></div>
+  </div>
+
+  <script src="app.js" defer></script>
+</body>
+</html>
